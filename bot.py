@@ -1,3 +1,4 @@
+from pyexpat.errors import messages
 from telegram import Update, ChatPermissions
 from telegram.ext import (
     ApplicationBuilder,
@@ -34,6 +35,8 @@ restricted_users = {}
 capcha_codes = {}
 # Словарь для хранения идентификаторов сообщений пользователей
 user_messages = {}
+# Словарь для хранения идентификаторов сообщений бота
+bot_messages = {}
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -75,11 +78,16 @@ async def restrict_user(update: Update,
             'time': time.time(),
             'capcha': capcha
         }
-        await context.bot.send_message(
+        message = await context.bot.send_message(
             chat_id=update.message.chat.id,
-            text=f'{new_member.first_name}, введите капчу для получения прав: {capcha}'
+            # отправляем сообщение пользователю в группу
+            text=f'Здравствуйте, {new_member.first_name}! Введите капчу, в течении {CAPCHA_DURATION} секунд: {capcha}'
         )
-        # todo - добавить это сообщение в список для удаления
+        # Сохраняем идентификатор сообщения бота
+        if new_member.id not in bot_messages:
+            bot_messages[new_member.id] = []
+        bot_messages[new_member.id].append(message.message_id)
+
         # Запускаем асинхронный таймер бана пользователя
         asyncio.create_task(ban_user_after_timeout(context, new_member.id,
                                                    update.message.chat.id))
@@ -88,8 +96,10 @@ async def restrict_user(update: Update,
         logging.error(
             f"Ошибка при ограничении пользователя {new_member.username}: {event}")
 
+
 async def delete_user_messages(context, chat_id, user_id):
-    """Удаляет все сообщения пользователя из чата."""
+    """Удаляет все сообщения пользователя и бота из чата."""
+    # Удаляем сообщения пользователя
     if user_id in user_messages:
         for message_id in user_messages[user_id]:
             try:
@@ -99,6 +109,18 @@ async def delete_user_messages(context, chat_id, user_id):
                 logging.error(
                     f"Ошибка при удалении сообщения {message_id} пользователя {user_id}: {event}")
         del user_messages[user_id]  # Удаляем записи о сообщениях пользователя
+
+    # Удаялем сообщения бота
+    if user_id in bot_messages:
+        for message_id in bot_messages[user_id]:
+            try:
+                await context.bot.delete_message(chat_id=chat_id,
+                                                 message_id=message_id)
+            except Exception as event:
+                logging.error(
+                    f'Ошибка при удалении сообщения {message_id} бота для пользователя {user_id}: {event}')
+            del bot_messages[user_id] # Удаляем записи о сообщениях бота
+
 
 async def ban_user_after_timeout(context, user_id, chat_id):
     """Функция для бана пользователя после истечения времени."""
@@ -118,6 +140,7 @@ async def ban_user_after_timeout(context, user_id, chat_id):
         if user_id in capcha_codes:
             del capcha_codes[user_id]
 
+
 async def check_capcha(update: Update,
                        context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
@@ -128,7 +151,6 @@ async def check_capcha(update: Update,
         # Сохраняем идентификатор сообщения, если это первое сообщение пользователя
         if user_id not in user_messages:
             user_messages[user_id] = []
-
         # Сохраняем идентификатор сообщения
         user_messages[user_id].append(update.message.message_id)
 
