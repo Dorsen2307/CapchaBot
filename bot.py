@@ -1,4 +1,11 @@
-from pyexpat.errors import messages
+import asyncio
+import logging
+import random
+import string
+import time
+import tracemalloc
+
+import nest_asyncio
 from telegram import Update, ChatPermissions
 from telegram.ext import (
     ApplicationBuilder,
@@ -7,13 +14,6 @@ from telegram.ext import (
     filters,
     ContextTypes
 )
-import time
-import random
-import string
-import logging
-import asyncio
-import tracemalloc
-import nest_asyncio
 
 nest_asyncio.apply()
 tracemalloc.start()
@@ -28,7 +28,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 TOKEN = '8373206965:AAHuaxqk1D6mqiDoeqT31GQWLfISk0SM8Js'
 
-RESTRICTED_TIME = 300  # 5 минут
+TIME_DELAY = 15  # задержка перед удалением пользователя после неверной капчи (чтобы пользователь смог прочитать последнее сообщение)
 CAPCHA_DURATION = 60  # Время на ответ капчи (в секундах)
 
 restricted_users = {}
@@ -119,7 +119,7 @@ async def delete_user_messages(context, chat_id, user_id):
             except Exception as event:
                 logging.error(
                     f'Ошибка при удалении сообщения {message_id} бота для пользователя {user_id}: {event}')
-            del bot_messages[user_id] # Удаляем записи о сообщениях бота
+        del bot_messages[user_id] # Удаляем записи о сообщениях бота
 
 
 async def ban_user_after_timeout(context, user_id, chat_id):
@@ -158,26 +158,6 @@ async def check_capcha(update: Update,
             current_time = time.time()
             user_data = restricted_users[user_id]
 
-            # Проверка времени ответа
-            if current_time - user_data['time'] > CAPCHA_DURATION:
-                logging.info(
-                    f"Время ответа истекло для пользователя {update.message.from_user.username}")
-                await delete_user_messages(context, chat_id,
-                                           user_id)  # Удаляем все сообщения пользователя
-                logging.info(
-                    f'Сообщения пользователя {update.message.from_user.username} удалены.')
-                await context.bot.delete_message(chat_id=chat_id,
-                                                 message_id=update.message.message_id)
-                await context.bot.ban_chat_member(chat_id=chat_id,
-                                                  user_id=user_id)
-                await context.bot.unban_chat_member(chat_id=chat_id,
-                                                    user_id=user_id)  # снимаем бан, чтобы пользователь мог вернуться
-                logging.info(
-                    f"Пользователь {update.message.from_user.username} удален за истечение времени")
-                del restricted_users[user_id]
-                del capcha_codes[user_id]
-                return
-
             # проверка капчи
             if message_text == user_data['capcha']:
                 logging.info(
@@ -194,11 +174,27 @@ async def check_capcha(update: Update,
                 del capcha_codes[user_id]
             else:
                 logging.info(
-                    f"Неправильная капча для пользователя {update.message.from_user.username}")
-                await update.message.reply_text(
-                    'Ввод капчи неверный, попробуйте вступить снова.')  # отправляем сообщение
+                    f"Неправильная капча от пользователя {update.message.from_user.username}")
+                message = await update.message.reply_text(
+                    f'Ввод капчи неверный, попробуйте позже вступить снова через {TIME_DELAY} секунд.')  # отправляем сообщение
+
+                # Ограничиваем права пользователя на отправку сообщений
+                await context.bot.restrict_chat_member(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    permissions=ChatPermissions(
+                        can_send_messages=False,
+                    )
+                )
+                logging.info(f"Ограничили права на отправку сообщений пользователя {update.message.from_user.username} после неверной капчи")
+
+                # Сохраняем идентификатор сообщения бота
+                if user_id not in bot_messages:
+                    bot_messages[user_id] = []
+                bot_messages[user_id].append(message.message_id)
+
                 await asyncio.sleep(
-                    30)  # Задержка 60 секунд перед удалением сообщений
+                    TIME_DELAY)  # Задержка перед удалением сообщений
                 await delete_user_messages(context, chat_id,
                                            user_id)  # Удаляем все сообщения пользователя
                 logging.info(
