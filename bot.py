@@ -26,7 +26,7 @@ logging.basicConfig(
 # Установим уровень логирования для httpx на WARNING, чтобы INFO-сообщения не показывались
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-TOKEN = ''
+TOKEN = '8373206965:AAHuaxqk1D6mqiDoeqT31GQWLfISk0SM8Js'
 
 TIME_DELAY = 15  # задержка перед удалением пользователя после неверной капчи (чтобы пользователь смог прочитать последнее сообщение)
 CAPCHA_DURATION = 60  # Время на ответ капчи (в секундах)
@@ -148,6 +148,9 @@ async def check_capcha(update: Update,
         chat_id = update.message.chat.id
         message_text = update.message.text
 
+        # Получаем имя пользователя
+        username = update.message.from_user.first_name
+
         # Сохраняем идентификатор сообщения, если это первое сообщение пользователя
         if user_id not in user_messages:
             user_messages[user_id] = []
@@ -162,14 +165,17 @@ async def check_capcha(update: Update,
             if message_text == user_data['capcha']:
                 logging.info(
                     f"Капча введена верно пользователем {update.message.from_user.username}")
+                # восстанавливаем права пользователя
+                await context.bot.promote_chat_member(chat_id=chat_id,
+                                                      user_id=user_id)
+                await context.bot.send_message(
+                    chat_id=update.message.chat_id,
+                    text=f'Добро пожаловать, {username}!'
+                )
                 await delete_user_messages(context, chat_id,
                                            user_id)  # Удаляем все сообщения пользователя
                 logging.info(
                     f'Сообщения пользователя {update.message.from_user.username} удалены.')
-                await context.bot.promote_chat_member(chat_id=chat_id,
-                                                      user_id=user_id)
-                await update.message.reply_text(
-                    f'Добро пожаловать, {update.message.from_user.username}!')
                 del restricted_users[user_id]
                 del capcha_codes[user_id]
             else:
