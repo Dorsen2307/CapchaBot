@@ -26,7 +26,7 @@ logging.basicConfig(
 # Установим уровень логирования для httpx на WARNING, чтобы INFO-сообщения не показывались
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-TOKEN = '8373206965:AAHuaxqk1D6mqiDoeqT31GQWLfISk0SM8Js'
+TOKEN = ''
 
 TIME_DELAY = 15  # задержка перед удалением пользователя после неверной капчи (чтобы пользователь смог прочитать последнее сообщение)
 CAPCHA_DURATION = 60  # Время на ответ капчи (в секундах)
