@@ -2,11 +2,10 @@ import asyncio
 import logging
 import random
 import string
-import time
 import tracemalloc
 
 import nest_asyncio
-from telegram import Update, ChatPermissions
+from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -34,7 +33,7 @@ logging.basicConfig(
 # Установим уровень логирования для httpx на WARNING, чтобы INFO-сообщения не показывались
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-TOKEN = ''
+TOKEN = '8373206965:AAHuaxqk1D6mqiDoeqT31GQWLfISk0SM8Js'
 
 SUPER_USER = '@GameFather40'
 
@@ -49,11 +48,28 @@ user_messages = {}  # Словарь для хранения идентифик�
 bot_messages = {}  # Словарь для хранения идентификаторов сообщений бота
 
 
-# async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-#     logging.info(
-#         f"Пользователь {update.message.from_user.username} запустил бота")
-#     await update.message.reply_text(
-#         'Добро пожаловать! Вы сможете писать сообщения после проверки.')
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await get_type_chat(update)
+
+    status = await is_user_banned(context, '1439984311',
+                                  update.message.chat.id)
+    if status:
+        logging.info("Статус: забанен")
+    else:
+        logging.info("Статус: незабанен")
+
+
+async def is_user_banned(context, user_id, chat_id):
+    try:
+        chat_member = await context.bot.get_chat_member(chat_id=chat_id, user_id=user_id)
+        if chat_member.status == 'kicked':
+            return True  # Пользователь забанен
+        else:
+            return False  # Пользователь не забанен
+    except Exception as event:
+        logging.error(f"Ошибка при получении статуса пользователя: {event}")
+        return False  # Если произошла ошибка, предполагаем, что пользователь не забанен
+
 
 async def get_type_chat(update) -> None:
     """Определяет тип чата"""
@@ -77,8 +93,6 @@ async def restrict_user(update: Update,
         new_member = update.message.new_chat_members[0]
         username = new_member.username
         logging.info(f"Новый участник: {username}")
-
-        # await get_type_chat(update)
 
         # Ограничиваем права пользователя
         # await context.bot.restrict_chat_member(
@@ -173,9 +187,6 @@ async def ban_user_after_timeout(context, user_id, chat_id, username):
 async def check_capcha(update: Update,
                        context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
-        # Вызов функции для определения типа чата
-        # await get_type_chat(update)
-
         user_id = update.message.from_user.id
         chat_id = update.message.chat.id
         message_text = update.message.text
@@ -207,7 +218,8 @@ async def check_capcha(update: Update,
                                                           user_id=user_id)
                     await context.bot.send_message(
                         chat_id=update.message.chat_id,
-                        text=f'Добро пожаловать, {username}!'
+                        text=f'Добро пожаловать, [{username}](tg://user?id={user_id})!',
+                        parse_mode='Markdown'
                     )
 
                     await delete_user_messages(context, chat_id,
@@ -261,7 +273,9 @@ async def check_capcha(update: Update,
                         logging.info("Таймер остановлен")
 
                         await context.bot.send_message(chat_id=chat_id,
-                                                       text=f"{SUPER_USER}, обратите внимание на пользователя {update.message.from_user.username}, он был забанен за неправильные попытки капчи.")
+                                                       text=f"{SUPER_USER}, обратите внимание на пользователя [{update.message.from_user.username}](tg://user?id={user_id}), он был забанен за неправильные попытки капчи.",
+                                                       parse_mode='Markdown'
+                                                       )
                         logging.info(
                             f"Отправлено сообщение в чат для {SUPER_USER}")
 
