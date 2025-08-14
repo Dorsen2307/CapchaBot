@@ -34,24 +34,26 @@ logging.basicConfig(
 # Установим уровень логирования для httpx на WARNING, чтобы INFO-сообщения не показывались
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-TOKEN = '8128882848:AAHg-YzjtzufUmXkjaaOK0a1EFM-O4lONGE'
+TOKEN = ''
+
+SUPER_USER = '@GameFather40'
 
 TIME_DELAY = 15  # задержка перед удалением пользователя после неверной капчи (чтобы пользователь смог прочитать последнее сообщение)
 CAPCHA_DURATION = 60  # Время на ответ капчи (в секундах)
+MAX_ATTEMPTS = 3  # Максимальное количество попыток
+COUNT_CHARS_CAPTCHA = 6 # Максимальное количество символов для ответа пользователя
 
 restricted_users = {}
-capcha_codes = {}
-# Словарь для хранения идентификаторов сообщений пользователей
-user_messages = {}
-# Словарь для хранения идентификаторов сообщений бота
-bot_messages = {}
+captcha_codes = {}
+user_messages = {}  # Словарь для хранения идентификаторов сообщений пользователей
+bot_messages = {}  # Словарь для хранения идентификаторов сообщений бота
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logging.info(
-        f"Пользователь {update.message.from_user.username} запустил бота")
-    await update.message.reply_text(
-        'Добро пожаловать! Вы сможете писать сообщения после проверки.')
+# async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+#     logging.info(
+#         f"Пользователь {update.message.from_user.username} запустил бота")
+#     await update.message.reply_text(
+#         'Добро пожаловать! Вы сможете писать сообщения после проверки.')
 
 async def get_type_chat(update) -> None:
     """Определяет тип чата"""
@@ -79,29 +81,29 @@ async def restrict_user(update: Update,
         await get_type_chat(update)
 
         # Ограничиваем права пользователя
-        await context.bot.restrict_chat_member(
-            chat_id=update.message.chat.id,
-            user_id=new_member.id,
-            permissions=ChatPermissions(
-                can_send_messages=True,
-                can_send_polls=False,
-                can_send_other_messages=False,
-                can_add_web_page_previews=False,
-                can_change_info=False,
-                can_invite_users=False,
-                can_pin_messages=False
-            )
-        )
-        logging.info(f"Ограничили права пользователя {new_member.username}")
+        # await context.bot.restrict_chat_member(
+        #     chat_id=update.message.chat.id,
+        #     user_id=new_member.id,
+        #     permissions=ChatPermissions(
+        #         can_send_messages=True,
+        #         can_send_polls=False,
+        #         can_send_other_messages=False,
+        #         can_add_web_page_previews=False,
+        #         can_change_info=False,
+        #         can_invite_users=False,
+        #         can_pin_messages=False
+        #     )
+        # )
+        # logging.info(f"Ограничили права пользователя {new_member.username}")
 
         # Генерируем капчу
         capcha = ''.join(
             random.choices(string.ascii_letters + string.digits, k=5))
-        capcha_codes[new_member.id] = capcha
+        captcha_codes[new_member.id] = capcha
 
         # Добавляем в список ограниченных
         restricted_users[new_member.id] = {
-            'time': time.time(),
+            'attempts': 0,
             'capcha': capcha,
             'ban_task': asyncio.create_task(
                 ban_user_after_timeout(context, new_member.id,
@@ -164,15 +166,15 @@ async def ban_user_after_timeout(context, user_id, chat_id, username):
             logging.error(
                 f"Ошибка при удалении пользователя {username}({user_id}): {event}")
         del restricted_users[user_id]
-        if user_id in capcha_codes:
-            del capcha_codes[user_id]
+        if user_id in captcha_codes:
+            del captcha_codes[user_id]
 
 
 async def check_capcha(update: Update,
                        context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         # Вызов функции для определения типа чата
-        await get_type_chat(update)
+        # await get_type_chat(update)
 
         user_id = update.message.from_user.id
         chat_id = update.message.chat.id
@@ -188,66 +190,102 @@ async def check_capcha(update: Update,
         user_messages[user_id].append(update.message.message_id)
 
         if user_id in restricted_users:
-            current_time = time.time()
             user_data = restricted_users[user_id]
+            user_data['ban_task'].cancel()  # отменяем предыдущую задачу
 
-            # проверка капчи
-            if message_text == user_data['capcha']:
-                logging.info(
-                    f"Капча введена верно пользователем {update.message.from_user.username}")
-                # восстанавливаем права пользователя
-                await context.bot.promote_chat_member(chat_id=chat_id,
-                                                      user_id=user_id)
-                await context.bot.send_message(
-                    chat_id=update.message.chat_id,
-                    text=f'Добро пожаловать, {username}!'
-                )
-                await delete_user_messages(context, chat_id,
-                                           user_id)  # Удаляем все сообщения пользователя
-                logging.info(
-                    f'Сообщения пользователя {update.message.from_user.username} удалены.')
-                # Отменяем задачу таймера
-                user_data['ban_task'].cancel()
-                del restricted_users[user_id]
-                del capcha_codes[user_id]
+            # Проверка длины введенной капчи
+            if len(message_text) <= COUNT_CHARS_CAPTCHA:
+                user_data['attempts'] += 1
+                # проверка капчи
+                if message_text == user_data['capcha']:
+                    logging.info(
+                        f"Капча введена верно пользователем {update.message.from_user.username}")
+                    # восстанавливаем права пользователя
+                    await context.bot.promote_chat_member(chat_id=chat_id,
+                                                          user_id=user_id)
+                    await context.bot.send_message(
+                        chat_id=update.message.chat_id,
+                        text=f'Добро пожаловать, {username}!'
+                    )
+                    await delete_user_messages(context, chat_id,
+                                               user_id)  # Удаляем все сообщения пользователя
+                    logging.info(
+                        f'Сообщения пользователя {update.message.from_user.username} удалены.')
+                    # Отменяем задачу таймера
+                    user_data['ban_task'].cancel()
+                    del restricted_users[user_id]
+                    del captcha_codes[user_id]
+                else:
+                    if user_data['attempts'] < MAX_ATTEMPTS:
+                        logging.info(
+                            f"Неправильная капча от пользователя {update.message.from_user.username}. Попытка {user_data['attempts']}.")
+                        new_captcha = ''.join(random.choices(
+                            string.ascii_letters + string.digits, k=5))
+                        logging.info(f"Создаем новую капчу: {new_captcha}")
+                        message = await context.bot.send_message(
+                            chat_id=update.message.chat_id,
+                            text=f'Попробуйте еще раз! Введите капчу: {new_captcha}'
+                        )  # отправляем сообщение
+                        user_data['ban_task'] = asyncio.create_task(
+                            ban_user_after_timeout(context, user_id, chat_id,
+                                                   update.message.from_user.username))
+                    else:
+                        logging.info(
+                            f"Пользователь {update.message.from_user.username} превысил максимальное количество попыток.")
+                        await delete_user_messages(context, chat_id,
+                                                   user_id)  # Удаляем все сообщения пользователя
+                        logging.info(
+                            f'Сообщения пользователя {update.message.from_user.username} удалены.')
+                        await context.bot.ban_chat_member(chat_id=chat_id,
+                                                          user_id=user_id)
+                        logging.info(
+                            f"Пользователь {update.message.from_user.username} забанен за неправильную капчу")
+                        user_data['ban_task'].cancel()
+                        logging.info("Таймер остановлен")
+                        await context.bot.send_message(chat_id=chat_id,
+                                                       text=f"{SUPER_USER}, обратите внимание на пользователя {update.message.from_user.username}, он был забанен за неправильные попытки капчи.")
+                        logging.info(
+                            f"Отправлено сообщение в чат для {SUPER_USER}")
+                        del restricted_users[user_id]
+                        del captcha_codes[user_id]
+
+                        # Ограничиваем права пользователя на отправку сообщений
+                        # await context.bot.restrict_chat_member(
+                        #     chat_id=chat_id,
+                        #     user_id=user_id,
+                        #     permissions=ChatPermissions(
+                        #         can_send_messages=False,
+                        #     )
+                        # )
+                        # logging.info(
+                        #     f"Ограничили права на отправку сообщений пользователя {update.message.from_user.username} после неверной капчи")
+
+                        # Сохраняем идентификатор сообщения бота
+                        # if user_id not in bot_messages:
+                        #     bot_messages[user_id] = []
+                        # bot_messages[user_id].append(message.message_id)
+
+                        # await asyncio.sleep(
+                        #     TIME_DELAY)  # Задержка перед удалением сообщений
+
+                        # await context.bot.ban_chat_member(chat_id=chat_id,
+                        #                                   user_id=user_id)
+                        # await context.bot.unban_chat_member(chat_id=chat_id,
+                        #                                     user_id=user_id)  # снимаем бан
+                        # Отменяем задачу таймера
+                        # user_data['ban_task'].cancel()
+                        # logging.info(
+                        #     f"Пользователь {update.message.from_user.username} забанен за неправильную капчу")
+                        # del restricted_users[user_id]
+                        # del captcha_codes[user_id]
             else:
                 logging.info(
-                    f"Неправильная капча от пользователя {update.message.from_user.username}")
-                message = await update.message.reply_text(
-                    f'Ввод капчи неверный, попробуйте вступить снова через {TIME_DELAY} секунд.')  # отправляем сообщение
-
-                # Ограничиваем права пользователя на отправку сообщений
-                await context.bot.restrict_chat_member(
-                    chat_id=chat_id,
-                    user_id=user_id,
-                    permissions=ChatPermissions(
-                        can_send_messages=False,
-                    )
-                )
-                logging.info(
-                    f"Ограничили права на отправку сообщений пользователя {update.message.from_user.username} после неверной капчи")
-
-                # Сохраняем идентификатор сообщения бота
-                if user_id not in bot_messages:
+                    f"Длина введенной капчи больше допустимой от пользователя {update.message.from_user.username}.")
+                message = await context.bot.send_message(chat_id=update.message.chat.id,
+                                               text='Длина введенной капчи превышает допустимую. Попробуйте снова.')
+                if user_id in bot_messages:
                     bot_messages[user_id] = []
                 bot_messages[user_id].append(message.message_id)
-
-                await asyncio.sleep(
-                    TIME_DELAY)  # Задержка перед удалением сообщений
-                await delete_user_messages(context, chat_id,
-                                           user_id)  # Удаляем все сообщения пользователя
-                logging.info(
-                    f'Сообщения пользователя {update.message.from_user.username} удалены.')
-                await context.bot.ban_chat_member(chat_id=chat_id,
-                                                  user_id=user_id)
-                # await context.bot.unban_chat_member(chat_id=chat_id,
-                #                                     user_id=user_id)  # снимаем бан
-                # Отменяем задачу таймера
-                user_data['ban_task'].cancel()
-                logging.info(
-                    f"Пользователь {update.message.from_user.username} удален за неправильную капчу")
-                del restricted_users[user_id]
-                del capcha_codes[user_id]
     except Exception as event:
         logging.error(f"Ошибка при проверке капчи: {event}")
 
