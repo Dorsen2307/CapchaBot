@@ -18,15 +18,23 @@ from telegram.ext import (
 nest_asyncio.apply()
 tracemalloc.start()
 
-# Настройка логирования
+# Настройка логирования для консоли
+# logging.basicConfig(
+#     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+#     level=logging.INFO
+# )
+# Настройка логирования в файл
 logging.basicConfig(
+    filename='bot.log',
+    filemode='a',
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    level=logging.INFO,
+    encoding='utf-8'
 )
 # Установим уровень логирования для httpx на WARNING, чтобы INFO-сообщения не показывались
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-TOKEN = '8373206965:AAHuaxqk1D6mqiDoeqT31GQWLfISk0SM8Js'
+TOKEN = '8128882848:AAHg-YzjtzufUmXkjaaOK0a1EFM-O4lONGE'
 
 TIME_DELAY = 15  # задержка перед удалением пользователя после неверной капчи (чтобы пользователь смог прочитать последнее сообщение)
 CAPCHA_DURATION = 60  # Время на ответ капчи (в секундах)
@@ -45,12 +53,30 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         'Добро пожаловать! Вы сможете писать сообщения после проверки.')
 
+async def get_type_chat(update) -> None:
+    """Определяет тип чата"""
+    chat = update.message.chat  # Получаем объект Chat
+
+    if chat.type == "private":
+        logging.info("Это личный чат")
+    elif chat.type == "group":
+        logging.info("Это обычная группа")
+    elif chat.type == "supergroup":
+        logging.info("Это супергруппа")
+    elif chat.type == "channel":
+        logging.info("Это канал")
+    else:
+        logging.info("Неизвестный тип чата")
+
 
 async def restrict_user(update: Update,
                         context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         new_member = update.message.new_chat_members[0]
+        username = update.message.from_user.username
         logging.info(f"Новый участник: {new_member.username}")
+
+        await get_type_chat(update)
 
         # Ограничиваем права пользователя
         await context.bot.restrict_chat_member(
@@ -76,7 +102,10 @@ async def restrict_user(update: Update,
         # Добавляем в список ограниченных
         restricted_users[new_member.id] = {
             'time': time.time(),
-            'capcha': capcha
+            'capcha': capcha,
+            'ban_task': asyncio.create_task(
+                ban_user_after_timeout(context, new_member.id,
+                                       update.message.chat.id, username))
         }
         message = await context.bot.send_message(
             chat_id=update.message.chat.id,
@@ -87,10 +116,6 @@ async def restrict_user(update: Update,
         if new_member.id not in bot_messages:
             bot_messages[new_member.id] = []
         bot_messages[new_member.id].append(message.message_id)
-
-        # Запускаем асинхронный таймер бана пользователя
-        asyncio.create_task(ban_user_after_timeout(context, new_member.id,
-                                                   update.message.chat.id))
 
     except Exception as event:
         logging.error(
@@ -119,23 +144,25 @@ async def delete_user_messages(context, chat_id, user_id):
             except Exception as event:
                 logging.error(
                     f'Ошибка при удалении сообщения {message_id} бота для пользователя {user_id}: {event}')
-        del bot_messages[user_id] # Удаляем записи о сообщениях бота
+        del bot_messages[user_id]  # Удаляем записи о сообщениях бота
 
 
-async def ban_user_after_timeout(context, user_id, chat_id):
+async def ban_user_after_timeout(context, user_id, chat_id, username):
     """Функция для бана пользователя после истечения времени."""
     await asyncio.sleep(CAPCHA_DURATION)
     if user_id in restricted_users:
-        logging.info(f"Время ответа истекло для пользователя {user_id}")
+        logging.info(
+            f"Время ответа истекло для пользователя {username}({user_id})")
         await delete_user_messages(context, chat_id, user_id)
         try:
             await context.bot.ban_chat_member(chat_id=chat_id, user_id=user_id)
+            # await context.bot.unban_chat_member(chat_id=chat_id,
+            #                                     user_id=user_id)  # снимаем бан, чтобы мог вернуться
             logging.info(
-                f"Пользователь {user_id} забанен за истечение времени")
-            await context.bot.unban_chat_member(chat_id=chat_id,
-                                                user_id=user_id)  # снимаем бан, чтобы мог вернуться
+                f"Пользователь {username}({user_id}) удален за истечение времени")
         except Exception as event:
-            logging.error(f"Ошибка при бане пользователя {user_id}: {event}")
+            logging.error(
+                f"Ошибка при удалении пользователя {username}({user_id}): {event}")
         del restricted_users[user_id]
         if user_id in capcha_codes:
             del capcha_codes[user_id]
@@ -144,6 +171,9 @@ async def ban_user_after_timeout(context, user_id, chat_id):
 async def check_capcha(update: Update,
                        context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
+        # Вызов функции для определения типа чата
+        await get_type_chat(update)
+
         user_id = update.message.from_user.id
         chat_id = update.message.chat.id
         message_text = update.message.text
@@ -176,13 +206,15 @@ async def check_capcha(update: Update,
                                            user_id)  # Удаляем все сообщения пользователя
                 logging.info(
                     f'Сообщения пользователя {update.message.from_user.username} удалены.')
+                # Отменяем задачу таймера
+                user_data['ban_task'].cancel()
                 del restricted_users[user_id]
                 del capcha_codes[user_id]
             else:
                 logging.info(
                     f"Неправильная капча от пользователя {update.message.from_user.username}")
                 message = await update.message.reply_text(
-                    f'Ввод капчи неверный, попробуйте позже вступить снова через {TIME_DELAY} секунд.')  # отправляем сообщение
+                    f'Ввод капчи неверный, попробуйте вступить снова через {TIME_DELAY} секунд.')  # отправляем сообщение
 
                 # Ограничиваем права пользователя на отправку сообщений
                 await context.bot.restrict_chat_member(
@@ -192,7 +224,8 @@ async def check_capcha(update: Update,
                         can_send_messages=False,
                     )
                 )
-                logging.info(f"Ограничили права на отправку сообщений пользователя {update.message.from_user.username} после неверной капчи")
+                logging.info(
+                    f"Ограничили права на отправку сообщений пользователя {update.message.from_user.username} после неверной капчи")
 
                 # Сохраняем идентификатор сообщения бота
                 if user_id not in bot_messages:
@@ -207,8 +240,10 @@ async def check_capcha(update: Update,
                     f'Сообщения пользователя {update.message.from_user.username} удалены.')
                 await context.bot.ban_chat_member(chat_id=chat_id,
                                                   user_id=user_id)
-                await context.bot.unban_chat_member(chat_id=chat_id,
-                                                    user_id=user_id)  # снимаем бан
+                # await context.bot.unban_chat_member(chat_id=chat_id,
+                #                                     user_id=user_id)  # снимаем бан
+                # Отменяем задачу таймера
+                user_data['ban_task'].cancel()
                 logging.info(
                     f"Пользователь {update.message.from_user.username} удален за неправильную капчу")
                 del restricted_users[user_id]
@@ -220,7 +255,7 @@ async def check_capcha(update: Update,
 async def main() -> None:
     application = ApplicationBuilder().token(TOKEN).build()
 
-    application.add_handler(CommandHandler('start', start))
+    # application.add_handler(CommandHandler('start', start))
     application.add_handler(
         MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, restrict_user)
     )
